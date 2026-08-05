@@ -7,8 +7,8 @@ tracks the ambient light in the room.
 Firmware is PlatformIO + Arduino. Built in slices, where every slice is a
 device that actually works rather than a half-finished step.
 
-**Status: slices 1, 2 and 4 complete** — NTP-corrected time, indoor temperature
-and humidity on screen.
+**Status: slices 1, 2, 4 and 5 complete** — NTP-corrected time, indoor
+temperature and humidity, ambient light. Only the RTC remains.
 
 ## Hardware
 
@@ -60,22 +60,17 @@ reworked to 4-wire SPI (BS0=0, BS1=0) before any code was written.
 2. **WiFi + NTP** — time on screen. ✅
 3. DS3231 RTC — survives reboot and WiFi loss.
 4. **SHT45** — indoor temperature and humidity. ✅
-5. BH1750 — ambient-light auto-dimming.
+5. **BH1750** — ambient light. ✅
 
-Slice 4 was taken before slice 3; the sensors do not depend on the RTC.
+Slices 4 and 5 were taken before slice 3; the sensors do not depend on the RTC.
 
 Deliberately out of scope for now: outdoor ESP-NOW sensor node, WWVB radio time
 (ES100), CO2 (SCD41), battery backup, enclosure.
 
 ## Design notes
 
-- **Always on.** No presence sensor. Brightness comes purely from the BH1750,
-  between a floor of `0` and a ceiling of `90` on the SSD1322's 0-255 contrast
-  register. The floor is the register minimum because this panel is still
-  comfortably legible there in a dark room; the ceiling stays far below maximum
-  because full drive current is glarier than useful and is the fastest route to
-  burn-in. Note contrast `0` is not off — pixels are still lit; blanking needs
-  the display-off command.
+- **Always on**, and — as it turns out — always at the panel's dimmest setting.
+  See *Brightness* below. No presence sensor.
 - **Burn-in mitigation from day one.** The layout shifts a few pixels on a slow
   cycle and brightness is capped well below maximum. Static digits on a
   passive-matrix OLED will ghost otherwise.
@@ -101,8 +96,7 @@ Deliberately out of scope for now: outdoor ESP-NOW sensor node, WWVB radio time
   light exponential average settles that. It is read every 5 seconds — room
   temperature cannot change faster than that, and reading harder only heats the
   die, which biases the reading warm.
-- Ambient light never appears on screen — it drives brightness and is logged to
-  serial for tuning the curve.
+- Ambient light is shown on screen beside the humidity.
 - Temperature in °F.
 
 ## Building
@@ -227,6 +221,54 @@ Keep the trick in mind if you ever need DC back on `13`.
 
 Build with `-DAMBER_USE_HW_SPI` (on by default); drop the flag to fall back to
 bit-banging on different wiring.
+
+## Brightness
+
+The SSD1322 has **four** independent brightness controls, and U8g2 leaves three
+of them pinned at maximum:
+
+| Command | Range | What it changes | U8g2 default | Effect at the dim end |
+|---|---|---|---|---|
+| `0xBB` pre-charge voltage | `0x00`–`0x1F` | voltage each pixel is charged to | **`0x1F` (max)** | **dominant** |
+| `0xC1` contrast | 0–255 | segment current, fine | `0x9F` | small |
+| `0xC7` master current | 0–15 | segment current scale | **`0x0F` (max)** | small |
+| `0xB8` grayscale table | GS15 `0`–`180` | drive *pulse width* | linear via `0xB9` | **none measured** |
+
+Per the datasheet `ISEG = Contrast/256 × IREF × scale_factor × 2`, so contrast
+and master current multiply, and the grayscale table is a third axis because it
+changes duty rather than current. That is the theory. Measured on this panel,
+it is mostly wrong about what matters:
+
+- Sweeping `GS15` from `180` down to `1` — a 14× reduction in current-drive
+  pulse width — produced **no visible change**. At minimum settings the light is
+  not coming from the drive phase at all.
+- Cutting pre-charge *timing* (`0xB1`, `0xB6`) does dim the panel, but
+  **unevenly**: pre-charge is what equalises pixels, so starving it makes them
+  inconsistent rather than uniformly darker. Not used.
+- Cutting pre-charge *voltage* (`0xBB`) dims it **cleanly**, and is the only
+  control that reaches genuinely dim. U8g2 pins it at `0x1F`, higher than the
+  chip's own `0x17` reset default.
+
+Measured on this panel: `0x1F` and `0x18` are bright, `0x0D` is the lowest value
+that still renders thin strokes and the small 6×10 text evenly, and below `0x09`
+the panel goes black entirely. Judge this against the real clock face — a screen
+of large text stays clean well past the point where fine detail goes blotchy.
+
+Driving only the contrast register — the obvious thing, and what most code does
+— barely moves the bottom of the range.
+
+**This build sits at that floor permanently.** With all four at minimum the
+display is still comfortably legible in a bright room with the blinds open, so
+there is nothing to gain by ever going higher, and holding an always-on OLED at
+its floor is the best case for both burn-in and power. `AUTO_DIM_LEVEL_MIN` and
+`AUTO_DIM_LEVEL_MAX` in `include/config.h` clamp the curve's output; both are
+`0`. The sensor, the log-space mapping and the whole range are still live behind
+that clamp, so widening it is a one-line change.
+
+Deliberately unused: phase length (`0xB1`), second pre-charge period (`0xB6`)
+and VCOMH (`0xBE`). All three affect apparent brightness, but they are drive and
+timing parameters rather than brightness controls, and lowering them produced
+uneven pixels rather than a uniformly dimmer image.
 
 ## Second-boundary alignment
 

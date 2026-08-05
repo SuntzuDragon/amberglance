@@ -12,12 +12,12 @@
 
 #include <Arduino.h>
 #include <Wire.h>
-#include <math.h>
 #include <sys/time.h>
 
 #include "climate.h"
 #include "config.h"
 #include "dst.h"
+#include "light.h"
 #include "net.h"
 #include "ui.h"
 
@@ -44,26 +44,13 @@ static void scanI2C() {
   }
 }
 
-#ifdef AMBER_FAKE_LIGHT
-// Placeholder ambient light until the BH1750 is wired. It sweeps the whole
-// plausible range on purpose, so the dimming curve can be exercised before the
-// sensor exists. Drop -DAMBER_FAKE_LIGHT once it is real.
-static void fillFakeLight(float &lux, bool &haveLight) {
-  haveLight = true;
-  lux = 700.0f + 698.0f * sinf(millis() / 1000.0f / 29.0f);  // 2 - 1398 lx
-}
-#endif
-
 void setup() {
   Serial.begin(115200);
   const uint32_t serialDeadline = millis() + 1500;
   while (!Serial && millis() < serialDeadline) delay(10);
 
   Serial.println();
-  Serial.println(F("amberglance - slice 4 (indoor temp + humidity)"));
-#ifdef AMBER_FAKE_LIGHT
-  Serial.println(F("light: FAKE placeholder data (BH1750 not wired)"));
-#endif
+  Serial.println(F("amberglance - slice 5 (auto-dimming)"));
 
   ui::begin();
   ui::splash();
@@ -72,6 +59,7 @@ void setup() {
 
   scanI2C();
   climate::begin();
+  light::begin();
   dst::begin();
   net::begin();
 }
@@ -149,18 +137,25 @@ void loop() {
   s.tempF = climate::temperatureF();
   s.humidityPct = climate::humidityPct();
 
-  float lux = 0.0f;
-  bool haveLight = false;
-#ifdef AMBER_FAKE_LIGHT
-  fillFakeLight(lux, haveLight);
-#endif
+  s.haveLight = light::available();
+  s.lux = light::lux();
 
-  // Ambient light stays off the glass by choice — it drives brightness and is
-  // logged here for tuning the curve in slice 5.
-  static uint32_t lastLuxLog = 0;
-  if (haveLight && millis() - lastLuxLog >= 30000) {
-    lastLuxLog = millis();
-    Serial.printf("light: %.0f lx\n", lux);
+  // Only push a contrast change when it actually moves, so the panel is not
+  // handed the same value every second.
+  static uint16_t lastLevel = 0xFFFF;
+  const uint8_t level = light::recommendedLevel();
+  if (level != lastLevel) {
+    lastLevel = level;
+    ui::setBrightness(level);
+
+    // A room going light or dark walks the curve a step or two a second, so
+    // logging every one would bury everything else. Report periodically; the
+    // live value is on the glass.
+    static uint32_t lastLogMs = 0;
+    if (s.haveLight && millis() - lastLogMs >= 15000) {
+      lastLogMs = millis();
+      Serial.printf("light: %.0f lx -> level %u\n", s.lux, level);
+    }
   }
 
   static bool lastValid = false;
@@ -190,6 +185,7 @@ void loop() {
   // conversion blocks ~10ms, which is fine against a second of slack but would
   // push the next frame late if it ran in the lead-in window.
   climate::poll();
+  light::poll();
 
 #ifdef AMBER_LAYOUT_DEBUG
   if (timeValid) {

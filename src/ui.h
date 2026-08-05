@@ -11,9 +11,6 @@ namespace ui {
 
 // What the screen should show. The `have*` flags exist so a missing sensor
 // renders as a placeholder rather than a plausible-looking zero.
-//
-// Ambient light is deliberately absent: it drives brightness and is logged to
-// serial for tuning, but never occupies space on the glass.
 struct State {
   bool timeValid;
   struct tm local;
@@ -23,6 +20,9 @@ struct State {
   bool haveClimate;
   float tempF;
   float humidityPct;
+
+  bool haveLight;
+  float lux;
 
   // Non-null while a daylight-saving transition is worth announcing, with
   // the direction it went: +1 lost an hour, -1 gained one.
@@ -42,7 +42,8 @@ void render(const State &s);
 void debugLayout();
 #endif
 
-// 0-255, clamped to the readability floor and the burn-in ceiling.
-void setBrightness(uint8_t contrast);
+// Abstract 0-255 brightness, mapped onto both of the panel's brightness
+// controls and clamped to the configured floor and ceiling.
+void setBrightness(uint8_t level);
 
 }  // namespace ui

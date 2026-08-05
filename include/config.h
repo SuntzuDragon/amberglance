@@ -34,20 +34,72 @@ constexpr int PIN_OLED_RESET = 14;
 constexpr int PIN_OLED_CS    = 10;
 
 // ---- Display brightness policy ----
-// Always-on OLED. The ceiling sits well below the hardware maximum of 255:
-// full drive current is both glarier than useful and the fastest route to
-// burn-in on a passive-matrix panel.
+// The SSD1322 has TWO independent brightness controls, and using only one
+// wastes most of the panel's range:
 //
-// The floor is 0 — the register's own minimum — because this panel stays
-// comfortably legible there in a dark room, so there is nothing to gain by
-// holding it higher. Note 0 is not off: the contrast register scales drive
-// current, and pixels are still lit at 0. Actually blanking the panel would
-// need the display-off command, not a contrast of 0.
+//   0xBB  pre-charge voltage  0x00-0x1F, and by far the most effective
+//   0xC1  contrast            0-255, fine
+//   0xC7  master current      0-15,  scales segment drive current
+//   0xB8  grayscale table     pulse width per grey level
+//
+// U8g2 pins master current at 0x0F and selects the default linear grayscale
+// table (0xB9), then never touches either — so contrast alone only spans the
+// top of what the panel can do. Mono rendering lights every pixel at grey
+// level 15, so GS15's pulse width scales the whole image, and it reaches far
+// dimmer than the other two combined.
+//
+// Code works in an abstract 0-255 brightness level; ui::setBrightness maps it
+// onto both registers. Note even level 0 is not off — pixels are still lit.
+// Actually blanking the panel needs the display-off command.
 constexpr uint8_t OLED_CONTRAST_MIN =  0;
 constexpr uint8_t OLED_CONTRAST_MAX = 90;
+constexpr uint8_t OLED_MASTER_MIN   =  0;
+constexpr uint8_t OLED_MASTER_MAX   = 15;
 
-// Slice 1 runs at a fixed mid brightness; the BH1750 takes over in slice 5.
-constexpr uint8_t OLED_CONTRAST_DEFAULT = 48;
+// GS15 pulse width, in display clocks (0-180). GS1..GS14 stay at 0..13 and
+// only GS15 moves. Measured on this panel, sweeping GS15 from 14 down to 1 made
+// no visible difference at all — at minimum settings the light is not coming
+// from the current-drive phase.
+constexpr uint8_t OLED_GRAY_MIN     =  14;
+constexpr uint8_t OLED_GRAY_MAX     = 180;
+
+// Pre-charge voltage, 0x00 (0.20 x VCC) to 0x1F (0.60 x VCC). u8g2 pins this at
+// 0x1F — above even the chip's own 0x17 reset default — and this turned out to
+// be the control that actually dims the panel. Measured: 0x1F and 0x18 are
+// bright, and below 0x09 the panel goes black entirely.
+//
+// The floor was chosen against the real clock face, not a test pattern: thin
+// digit strokes and the small 6x10 text go blotchy well before a screen full of
+// large text does, so they are the binding constraint. 0x0D is the lowest value
+// that still renders them evenly.
+//
+// If it ever looks blotchy in a cold room or after a few years, raise this a
+// step or two — OLED threshold voltages drift with both.
+constexpr uint8_t OLED_PRECHARGE_MIN = 0x0D;
+constexpr uint8_t OLED_PRECHARGE_MAX = 0x1F;
+
+// Used before the light sensor has a reading, and whenever it is unavailable.
+constexpr uint8_t OLED_BRIGHTNESS_DEFAULT = 128;
+
+// The auto-dim curve's output is clamped to this band. Both ends are pinned at
+// 0 because the panel's true floor — all three brightness controls at minimum —
+// turned out to be comfortably legible even in a bright room with the blinds
+// open. There is nothing to gain by ever going above it, and an always-on OLED
+// held at its floor is the best case for both burn-in and power.
+//
+// Widen this if a sunlit room ever washes the display out; the sensor, the
+// curve and the whole mapping are still live behind the clamp.
+constexpr uint8_t AUTO_DIM_LEVEL_MIN = 0;
+constexpr uint8_t AUTO_DIM_LEVEL_MAX = 0;
+
+// ---- Auto-dimming curve ----
+// Anchor points for the lux-to-contrast mapping, which is interpolated in log
+// space. At or below LUX_DARK the display sits at its floor; at or above
+// LUX_BRIGHT, its ceiling. Rough reference: an unlit room at night is well
+// under 1 lx, comfortable indoor lighting is 100-300 lx, and a sunlit room
+// runs into the thousands.
+constexpr float LUX_DARK = 1.0f;
+constexpr float LUX_BRIGHT = 400.0f;
 
 // ---- Burn-in mitigation ----
 // Always-on OLED with static digits will ghost. The whole layout is drawn into

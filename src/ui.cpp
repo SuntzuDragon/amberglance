@@ -59,6 +59,9 @@ constexpr int X_MARGIN = 2;
 // daylight-saving notice is active.
 constexpr uint32_t NOTICE_ALTERNATE_MS = 4000;
 
+// Space between the ambient-light readout and the humidity beside it.
+constexpr int LUX_GAP = 10;
+
 // Walk the layout around the spare pixels so no pixel is held at one intensity
 // forever. A full circuit takes (5 x 5) minutes.
 void burnInShift(int &ox, int &oy) {
@@ -146,6 +149,13 @@ void drawTabular(const uint8_t *font, int x, int y, const char *s) {
       x += u8g2.getStrWidth(buf);
     }
   }
+}
+
+// Compact enough to sit beside the humidity without crowding it, and bounded:
+// full daylight on this sensor runs into five figures.
+void formatLux(float lux, char *out, size_t n) {
+  if (lux < 1000.0f) snprintf(out, n, "%.0f lx", lux);
+  else snprintf(out, n, "%.1fk lx", lux / 1000.0f);
 }
 
 void formatAge(uint32_t secs, char *out, size_t n) {
@@ -241,12 +251,43 @@ void drawTemperature(int ox, int oy, const ui::State &s) {
 
 void ui::begin() {
   u8g2.begin();
-  setBrightness(OLED_CONTRAST_DEFAULT);
+  // Start at the floor rather than a mid value, so boot is never a bright
+  // flash in a dark room. The light sensor raises it if the clamp allows.
+  setBrightness(AUTO_DIM_LEVEL_MIN);
 }
 
-void ui::setBrightness(uint8_t contrast) {
-  if (contrast < OLED_CONTRAST_MIN) contrast = OLED_CONTRAST_MIN;
-  if (contrast > OLED_CONTRAST_MAX) contrast = OLED_CONTRAST_MAX;
+void ui::setBrightness(uint8_t level) {
+  const uint8_t contrast =
+      OLED_CONTRAST_MIN +
+      (uint16_t)level * (OLED_CONTRAST_MAX - OLED_CONTRAST_MIN) / 255;
+  const uint8_t master =
+      OLED_MASTER_MIN +
+      (uint16_t)level * (OLED_MASTER_MAX - OLED_MASTER_MIN) / 255;
+
+  const uint8_t gs15 =
+      OLED_GRAY_MIN +
+      (uint16_t)level * (OLED_GRAY_MAX - OLED_GRAY_MIN) / 255;
+
+  // Mono rendering lights every pixel at grey level 15, so GS15's pulse width
+  // scales the whole image. GS1..GS14 stay at 0..13 — nothing here ever draws
+  // them, and they only exist because the controller requires the table to be
+  // strictly increasing.
+  u8g2.sendF("caaaaaaaaaaaaaaa", 0x0b8, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11,
+             12, 13, gs15);
+  u8g2.sendF("c", 0x000);  // enable the table just written
+
+  const uint8_t precharge =
+      OLED_PRECHARGE_MIN +
+      (uint16_t)level * (OLED_PRECHARGE_MAX - OLED_PRECHARGE_MIN) / 255;
+
+  // Pre-charge voltage is the control that actually matters at the dim end —
+  // see the note in config.h. Timing (0xB1, 0xB6) is deliberately left alone:
+  // starving it dims the panel too, but unevenly.
+  u8g2.sendF("ca", 0x0bb, precharge);
+
+  // 0xC7 is the master segment-current scale. U8g2 sets it once at init and
+  // leaves it at maximum, so nothing else will fight this.
+  u8g2.sendF("ca", 0x0c7, master);
   u8g2.setContrast(contrast);
 }
 
@@ -296,6 +337,7 @@ void ui::debugLayout() {
 
   u8g2.setFont(FONT_SMALL);
   const int humW = u8g2.getStrWidth("100% RH");
+  const int luxW = u8g2.getStrWidth("99.9k lx");
   // The notice carries a 9px face on its right, so it is the wider case.
   const int botW = max((int)u8g2.getStrWidth("DST +1h now MDT") + 4 + FACE_W,
                        (int)u8g2.getStrWidth("no network"));
@@ -309,6 +351,8 @@ void ui::debugLayout() {
       {"date",   R - dateW,    R,                 dateY.first, dateY.second},
       {"temp",   R - tempW,    R,                 tempY.first, tempY.second},
       {"humid",  R - humW,     R,                 botY.first,  botY.second},
+      {"lux",    R - humW - LUX_GAP - luxW, R - humW - LUX_GAP,
+                                            botY.first,  botY.second},
       {"status", X_MARGIN,     X_MARGIN + botW,   botY.first,  botY.second},
   };
   const int n = sizeof(blocks) / sizeof(blocks[0]);
@@ -396,6 +440,16 @@ void ui::render(const State &s) {
   else snprintf(humidity, sizeof(humidity), "--%% RH");
   u8g2.setFont(FONT_SMALL);
   drawRight(ox, oy + Y_BOTTOM, humidity);
+
+  // Ambient light sits immediately left of the humidity, right-aligned against
+  // it so the pair reads as one group and neither shifts as values change.
+  char luxText[12];
+  if (s.haveLight) formatLux(s.lux, luxText, sizeof(luxText));
+  else snprintf(luxText, sizeof(luxText), "-- lx");
+  const int humidityLeft =
+      ox + LAYOUT_W - X_MARGIN - u8g2.getStrWidth(humidity);
+  u8g2.drawStr(humidityLeft - LUX_GAP - u8g2.getStrWidth(luxText),
+               oy + Y_BOTTOM, luxText);
 
   // --- Bottom left: sync status, alternating with any DST notice ---
   char status[24];
