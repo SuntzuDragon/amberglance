@@ -36,3 +36,23 @@ constexpr uint8_t OLED_CONTRAST_MAX = 90;
 
 // Slice 1 runs at a fixed mid brightness; the BH1750 takes over in slice 5.
 constexpr uint8_t OLED_CONTRAST_DEFAULT = 48;
+
+// ---- Burn-in mitigation ----
+// Always-on OLED with static digits will ghost. The whole layout is drawn into
+// a region smaller than the panel and walked around the spare pixels on a slow
+// cycle, so no pixel stays lit at the same intensity indefinitely.
+constexpr int LAYOUT_W = 252;
+constexpr int LAYOUT_H = 60;
+constexpr int SHIFT_STEPS_X = 256 - LAYOUT_W;  // 4
+constexpr int SHIFT_STEPS_Y = 64 - LAYOUT_H;   // 4
+constexpr uint32_t SHIFT_INTERVAL_MS = 60UL * 1000UL;
+
+// ---- Time ----
+// TZ string carries the US DST rules, so localtime() handles the switch with
+// no code of ours. Mountain Time (Utah).
+constexpr char TZ_MOUNTAIN[] = "MST7MDT,M3.2.0,M11.1.0";
+constexpr char NTP_SERVER_1[] = "pool.ntp.org";
+constexpr char NTP_SERVER_2[] = "time.nist.gov";
+
+// Set true for 24-hour time.
+constexpr bool CLOCK_24_HOUR = false;

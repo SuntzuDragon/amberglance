@@ -7,7 +7,7 @@ tracks the ambient light in the room.
 Firmware is PlatformIO + Arduino. Built in slices, where every slice is a
 device that actually works rather than a half-finished step.
 
-**Status: slice 1 complete** — display driver and wiring validated on hardware.
+**Status: slice 2 complete** — NTP-corrected time on screen.
 
 ## Hardware
 
@@ -47,7 +47,7 @@ reworked to 4-wire SPI (BS0=0, BS1=0) before any code was written.
 ## Slices
 
 1. **Display only** — validate the SPI rework and wiring. ✅
-2. WiFi + NTP — time on screen.
+2. **WiFi + NTP** — time on screen. ✅
 3. DS3231 RTC — survives reboot and WiFi loss.
 4. SHT45 — indoor temperature and humidity.
 5. BH1750 — ambient-light auto-dimming.
