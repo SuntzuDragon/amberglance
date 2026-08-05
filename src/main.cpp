@@ -8,6 +8,7 @@
 #include <Arduino.h>
 #include <Wire.h>
 #include <math.h>
+#include <sys/time.h>
 
 #include "config.h"
 #include "dst.h"
@@ -72,6 +73,33 @@ void setup() {
   net::begin();
 }
 
+// The frame takes real time to draw and clock out, so the second that belongs
+// on the glass is the one that will be current when the transfer finishes —
+// not the one current as drawing begins. Measured from the previous frame, so
+// it self-corrects as drawing cost changes with content.
+static uint32_t g_renderUs = 15000;
+
+static void loadDisplayTime(ui::State &s) {
+  struct timeval tv;
+  gettimeofday(&tv, nullptr);
+  time_t shown = tv.tv_sec;
+  if ((uint32_t)tv.tv_usec + g_renderUs >= 1000000) shown++;
+  localtime_r(&shown, &s.local);
+}
+
+// Start drawing g_renderUs before the next second so the pixels change on the
+// boundary, rather than up to a poll interval after it. Without this the loop
+// period is (render + delay), so the phase at which the rollover is noticed
+// drifts — and drifts by a different amount depending on what was drawn.
+static void paceToSecondBoundary() {
+  struct timeval tv;
+  gettimeofday(&tv, nullptr);
+  int32_t us = 1000000 - (int32_t)tv.tv_usec - (int32_t)g_renderUs;
+  if (us < 2000) us += 1000000;
+  delay(us / 1000);
+  delayMicroseconds(us % 1000);
+}
+
 void loop() {
   net::poll();
 
@@ -80,12 +108,12 @@ void loop() {
   s.timeValid = net::timeValid();
   s.secondsSinceSync = net::secondsSinceSync();
   if (s.timeValid) {
-    const time_t now = time(nullptr);
-    localtime_r(&now, &s.local);
+    loadDisplayTime(s);
   }
 
   dst::update(s.local, s.timeValid);
   s.dstNotice = dst::noticeActive() ? dst::noticeText() : nullptr;
+  s.dstDirection = dst::direction();
 
   float lux = 0.0f;
   bool haveLight = false;
@@ -130,8 +158,26 @@ void loop() {
     lastNet = s.net;
     lastShiftStep = shiftStep;
     lastNoticePhase = noticePhase;
+
+    const uint32_t t0 = micros();
     ui::render(s);
+    g_renderUs = micros() - t0;
+
+#ifdef AMBER_LAYOUT_DEBUG
+    // How far the completed frame landed from the second boundary. Negative
+    // means it finished early, which is the safe side.
+    static uint8_t tick = 0;
+    if ((tick++ % 10) == 0) {
+      struct timeval done;
+      gettimeofday(&done, nullptr);
+      long off = done.tv_usec;
+      if (off > 500000) off -= 1000000;
+      Serial.printf("tick: render %luus, landed %+ldus from the second\n",
+                    (unsigned long)g_renderUs, off);
+    }
+#endif
   }
 
-  delay(50);
+  if (s.timeValid) paceToSecondBoundary();
+  else delay(50);
 }

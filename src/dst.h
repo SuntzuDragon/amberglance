@@ -22,4 +22,8 @@ bool noticeActive();
 // e.g. "DST +1h now MDT" or "DST -1h now MST". Empty when no notice.
 const char *noticeText();
 
+// +1 sprang forward (an hour lost), -1 fell back (an hour gained), 0 if no
+// transition has been observed.
+int direction();
+
 }  // namespace dst

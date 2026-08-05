@@ -39,6 +39,11 @@ void dst::begin() {
   g_lastIsDst = g_prefs.getChar("isdst", -1);
   g_direction = g_prefs.getChar("dstdir", 0);
   g_atEpoch = g_prefs.getUInt("dstat", 0);
+
+  if (g_atEpoch != 0) {
+    Serial.printf("dst: stored transition %+dh at epoch %lu\n", (int)g_direction,
+                  (unsigned long)g_atEpoch);
+  }
 }
 
 void dst::update(const struct tm &local, bool timeValid) {
@@ -101,3 +106,5 @@ bool dst::noticeActive() {
 }
 
 const char *dst::noticeText() { return g_notice; }
+
+int dst::direction() { return g_direction; }

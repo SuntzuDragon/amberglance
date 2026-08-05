@@ -68,7 +68,9 @@ Deliberately out of scope for now: outdoor ESP-NOW sensor node, WWVB radio time
   at sync time.
 - **Daylight-saving transitions are announced.** For 24 hours afterwards the
   bottom-left line alternates between the sync status and e.g.
-  `DST +1h now MDT`, so an hour that vanished overnight is accounted for. The
+  `DST +1h now MDT` with a small face — smiling when you gained an hour of
+  sleep, frowning when you lost one — so an hour that vanished overnight is
+  accounted for. The
   observed state is persisted, so a transition is still reported if it happened
   while the device was unplugged — and a *clock correction* that crosses a
   boundary (a wrong RTC being fixed by NTP) re-baselines silently instead of
@@ -100,7 +102,7 @@ Set in `platformio.ini`.
 | `AMBER_FAKE_SENSORS` | Drifting placeholder temp/humidity/lux so the layout can be judged before the SHT45 and BH1750 are wired. Remove once they are real. |
 | `AMBER_LAYOUT_DEBUG` | Prints every block's worst-case ink rectangle at boot and runs a pairwise overlap test. Re-run it whenever a font or baseline changes. |
 | `AMBER_PANEL_ALT_MAP` | Selects the ZJY SSD1322 variant — see *Panel variants*. |
-| `AMBER_USE_HW_SPI` | Hardware SPI instead of bit-banged — see *Software vs hardware SPI*. |
+| `AMBER_USE_HW_SPI` | **On by default.** Hardware SPI — 13ms per frame instead of 424ms. See *Software vs hardware SPI*. |
 
 The layout check exists because the right rail is right-aligned: an overflow
 silently overlaps rather than failing, and a vertical collision is invisible to
@@ -167,21 +169,51 @@ from a wiring problem on sight.
 
 ## Software vs hardware SPI
 
-The display defaults to bit-banged SPI. U8g2's `_4W_HW_SPI` constructor leaves
-its clock/data pins unset and so takes the bare `SPI.begin()` path, which on the
-ESP32-S3 resolves to the FSPI defaults — including `MISO = GPIO13`, this
-project's DC line. `spiAttachMISO` then reconfigures DC as an SPI input.
+The display uses **hardware SPI**, and the margin is much larger than it looks
+on paper. Measured on this panel, drawing and clocking out one full 256x64
+frame:
 
-At one refresh per second the speed difference (~60ms vs ~7ms per full frame)
-is irrelevant. If you want hardware SPI later, claim the bus yourself before
-`u8g2.begin()`:
+| Transport | Frame time | CPU duty at 1 Hz |
+|---|---|---|
+| Software (bit-banged) | **424 ms** | 42% |
+| Hardware | **13 ms** | 1.3% |
+
+Bit-banging means roughly 196,000 `digitalWrite` calls per frame through the
+Arduino HAL, and the ESP32's `digitalWrite` is not cheap. A 424ms frame also
+means the panel physically cannot refresh faster than ~2.4 Hz, which rules out
+grayscale or any animation later.
+
+Getting there needs one line, because U8g2's `_4W_HW_SPI` constructor leaves
+its clock/data pins unset and therefore takes the bare `SPI.begin()` path. On
+the ESP32-S3 that resolves to the FSPI defaults — including `MISO = GPIO13`,
+which is this project's DC line — and `spiAttachMISO` would reconfigure DC as
+an SPI input. So the bus is claimed first, with MISO explicitly disabled:
 
 ```cpp
-SPI.begin(PIN_OLED_SCLK, -1, PIN_OLED_MOSI, -1);
+SPI.begin(PIN_OLED_SCLK, -1, PIN_OLED_MOSI, -1);   // before u8g2.begin()
 ```
 
 `SPIClass::begin()` opens with `if (_spi) return;`, so U8g2's later call becomes
-a no-op and GPIO13 stays a GPIO. Then build with `-DAMBER_USE_HW_SPI`.
+a no-op and GPIO13 stays a GPIO. Build with `-DAMBER_USE_HW_SPI` (on by
+default); drop the flag to fall back to bit-banging on different wiring.
+
+## Second-boundary alignment
+
+A naive loop polls on a fixed delay and redraws when the second changes, so its
+period is `render + delay`. The phase at which a rollover is noticed then
+drifts — and drifts by a different amount depending on how much ink the last
+frame contained, which is visible as the seconds landing unevenly.
+
+Instead the loop sleeps until exactly one render-time before the next second,
+using the *previous* frame's measured duration so it self-corrects as content
+changes, and draws the second that will be current when the transfer
+*finishes*. Frames land within a millisecond of the boundary:
+
+```
+tick: render 13981us, landed +118us from the second
+```
+
+`AMBER_LAYOUT_DEBUG` reports this every tenth frame.
 
 ## License
 

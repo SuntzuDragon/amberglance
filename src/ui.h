@@ -24,8 +24,10 @@ struct State {
   float tempF;
   float humidityPct;
 
-  // Non-null while a daylight-saving transition is worth announcing.
+  // Non-null while a daylight-saving transition is worth announcing, with
+  // the direction it went: +1 lost an hour, -1 gained one.
   const char *dstNotice;
+  int dstDirection;
 };
 
 void begin();

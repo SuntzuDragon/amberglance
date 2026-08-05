@@ -1,6 +1,7 @@
 #include "ui.h"
 
 #include <U8g2lib.h>
+#include <SPI.h>
 #include <string.h>
 #include <utility>
 
@@ -84,17 +85,39 @@ void drawRight(int ox, int y, const char *s) {
 // width, which is constant anyway since those glyphs never change.
 bool isCellChar(char c) { return (c >= '0' && c <= '9') || c == ' ' || c == '-'; }
 
-int digitCellWidth() {
+// Cell width is a property of the font, so it is measured once per font rather
+// than on every call. Recomputing it was ten glyph-table walks per call, and
+// the helpers below are called several times a frame — enough to make render
+// time vary with content, which shows up as the seconds landing unevenly.
+struct CellCache {
+  const uint8_t *font;
+  int width;
+};
+CellCache g_cells[4] = {};
+
+int digitCellWidth(const uint8_t *font) {
+  for (const auto &c : g_cells) {
+    if (c.font == font) return c.width;
+  }
+
   int w = 0;
   for (char c = '0'; c <= '9'; c++) {
     const char buf[2] = {c, 0};
     w = max(w, (int)u8g2.getStrWidth(buf));
   }
+  for (auto &c : g_cells) {
+    if (c.font == nullptr) {
+      c.font = font;
+      c.width = w;
+      break;
+    }
+  }
   return w;
 }
 
-int tabularWidth(const char *s) {
-  const int cell = digitCellWidth();
+int tabularWidth(const uint8_t *font, const char *s) {
+  u8g2.setFont(font);
+  const int cell = digitCellWidth(font);
   int total = 0;
   for (const char *p = s; *p; ++p) {
     if (isCellChar(*p)) {
@@ -107,8 +130,9 @@ int tabularWidth(const char *s) {
   return total;
 }
 
-void drawTabular(int x, int y, const char *s) {
-  const int cell = digitCellWidth();
+void drawTabular(const uint8_t *font, int x, int y, const char *s) {
+  u8g2.setFont(font);
+  const int cell = digitCellWidth(font);
   for (const char *p = s; *p; ++p) {
     const char buf[2] = {*p, 0};
     if (isCellChar(*p)) {
@@ -162,6 +186,36 @@ void statusText(const ui::State &s, char *out, size_t n) {
   snprintf(out, n, "%s %s", kind, age);
 }
 
+// An upright face, drawn rather than typed — no font here carries one, and a
+// sideways ":)" would need reading rather than just seeing. Eyes and mouth
+// only, no outline: at this size the ring crowded the features.
+//
+// Which way round matters: falling back gives you an hour of sleep, springing
+// forward takes one.
+constexpr int FACE_W = 5;
+
+void drawFace(int x, int baseline, bool happy) {
+  const int cx = x + 2;
+  const int cy = baseline - 4;
+
+  u8g2.drawPixel(cx - 2, cy - 1);
+  u8g2.drawPixel(cx + 2, cy - 1);
+
+  if (happy) {
+    u8g2.drawPixel(cx - 2, cy + 1);
+    u8g2.drawPixel(cx - 1, cy + 2);
+    u8g2.drawPixel(cx,     cy + 2);
+    u8g2.drawPixel(cx + 1, cy + 2);
+    u8g2.drawPixel(cx + 2, cy + 1);
+  } else {
+    u8g2.drawPixel(cx - 2, cy + 2);
+    u8g2.drawPixel(cx - 1, cy + 1);
+    u8g2.drawPixel(cx,     cy + 1);
+    u8g2.drawPixel(cx + 1, cy + 1);
+    u8g2.drawPixel(cx + 2, cy + 2);
+  }
+}
+
 // Degree sign drawn as a ring rather than a glyph: the large logisoso faces
 // are ASCII-only, and mixing in a Latin-1 font just for one character costs
 // more flash and alignment fiddling than two primitives.
@@ -170,13 +224,12 @@ void drawTemperature(int ox, int oy, const ui::State &s) {
   if (s.haveClimate) snprintf(num, sizeof(num), "%.1f", s.tempF);
   else snprintf(num, sizeof(num), "--.-");
 
-  u8g2.setFont(FONT_TEMP);
-  const int wNum = tabularWidth(num);
+  const int wNum = tabularWidth(FONT_TEMP, num);
   constexpr int W_UNIT = 12;  // ring + "F"
 
   const int x = ox + LAYOUT_W - X_MARGIN - (wNum + 3 + W_UNIT);
   const int y = oy + Y_TEMP;
-  drawTabular(x, y, num);
+  drawTabular(FONT_TEMP, x, y, num);
 
   const int ux = x + wNum + 3;
   u8g2.drawCircle(ux + 2, y - 14, 2);
@@ -187,6 +240,14 @@ void drawTemperature(int ox, int oy, const ui::State &s) {
 }  // namespace
 
 void ui::begin() {
+#ifdef AMBER_USE_HW_SPI
+  // Claim the bus first, with MISO explicitly disabled. U8g2's hardware-SPI
+  // path would otherwise call the bare SPI.begin(), which on the ESP32-S3
+  // resolves to the FSPI defaults and attaches MISO to GPIO13 — the DC line.
+  // SPIClass::begin() opens with `if (_spi) return;`, so this makes U8g2's
+  // later call a no-op and DC stays a GPIO.
+  SPI.begin(PIN_OLED_SCLK, -1, PIN_OLED_MOSI, -1);
+#endif
   u8g2.begin();
   setBrightness(OLED_CONTRAST_DEFAULT);
 }
@@ -223,13 +284,11 @@ void ui::debugLayout() {
     return std::pair<int, int>(top, bot);
   };
 
-  u8g2.setFont(FONT_TIME);
-  const int timeW = tabularWidth("88:88");
+  const int timeW = tabularWidth(FONT_TIME, "88:88");
   const auto timeY = ink(FONT_TIME, Y_TIME, false);
   const int afterTime = X_MARGIN + timeW + 5;
 
-  u8g2.setFont(FONT_SECS);
-  const int secsW = tabularWidth("88");
+  const int secsW = tabularWidth(FONT_SECS, "88");
   const auto secsY = ink(FONT_SECS, Y_TIME, false);
 
   u8g2.setFont(FONT_SMALL);
@@ -240,14 +299,14 @@ void ui::debugLayout() {
   const int dateW = u8g2.getStrWidth("Wed Sep 30");
   const auto dateY = ink(FONT_DATE, Y_DATE, true);
 
-  u8g2.setFont(FONT_TEMP);
-  const int tempW = tabularWidth("-88.8") + 3 + 12;
+  const int tempW = tabularWidth(FONT_TEMP, "-88.8") + 3 + 12;
   const auto tempY = ink(FONT_TEMP, Y_TEMP, false);
 
   u8g2.setFont(FONT_SMALL);
   const int humW = u8g2.getStrWidth("100% RH");
-  const int botW = max(u8g2.getStrWidth("DST +1h now MDT"),
-                       u8g2.getStrWidth("no network"));
+  // The notice carries a 9px face on its right, so it is the wider case.
+  const int botW = max((int)u8g2.getStrWidth("DST +1h now MDT") + 4 + FACE_W,
+                       (int)u8g2.getStrWidth("no network"));
   const auto botY = ink(FONT_SMALL, Y_BOTTOM, true);
 
   const int R = LAYOUT_W - X_MARGIN;
@@ -312,16 +371,14 @@ void ui::render(const State &s) {
     snprintf(hhmm, sizeof(hhmm), "%2d:%02d", h, s.local.tm_min);
   }
 
-  u8g2.setFont(FONT_TIME);
   const int timeX = ox + X_MARGIN;
-  drawTabular(timeX, oy + Y_TIME, hhmm);
-  const int afterTime = timeX + tabularWidth(hhmm) + 5;
+  drawTabular(FONT_TIME, timeX, oy + Y_TIME, hhmm);
+  const int afterTime = timeX + tabularWidth(FONT_TIME, hhmm) + 5;
 
   if (s.timeValid) {
     char ss[4];
     snprintf(ss, sizeof(ss), "%02d", s.local.tm_sec);
-    u8g2.setFont(FONT_SECS);
-    drawTabular(afterTime, oy + Y_TIME, ss);
+    drawTabular(FONT_SECS, afterTime, oy + Y_TIME, ss);
 
     if (!CLOCK_24_HOUR) {
       u8g2.setFont(FONT_SMALL);
@@ -352,12 +409,18 @@ void ui::render(const State &s) {
   char status[24];
   statusText(s, status, sizeof(status));
 
-  const char *bottomLeft = status;
-  if (s.dstNotice && ((millis() / NOTICE_ALTERNATE_MS) % 2 == 1)) {
-    bottomLeft = s.dstNotice;
-  }
+  const bool showNotice =
+      s.dstNotice && ((millis() / NOTICE_ALTERNATE_MS) % 2 == 1);
+
   u8g2.setFont(FONT_SMALL);
+  const char *bottomLeft = showNotice ? s.dstNotice : status;
   u8g2.drawStr(ox + X_MARGIN, oy + Y_BOTTOM, bottomLeft);
+
+  if (showNotice) {
+    // -1 fell back: an hour of sleep gained.  +1 sprang forward: one lost.
+    drawFace(ox + X_MARGIN + u8g2.getStrWidth(bottomLeft) + 4, oy + Y_BOTTOM,
+             s.dstDirection < 0);
+  }
 
   // Mirror the panel's own account of itself to serial, so it is visible in a
   // log without anyone having to look at the glass. Keyed on the condition
