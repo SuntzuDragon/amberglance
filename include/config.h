@@ -19,12 +19,17 @@ constexpr uint8_t I2C_ADDR_BH1750 = 0x23;
 // OLED header pin -> signal -> ESP32-S3 GPIO
 //   4 (D0)  SCLK      GPIO12
 //   5 (D1)  SDIN/MOSI GPIO11
-//  14 (/DC) DC        GPIO13
+//  14 (/DC) DC        GPIO18
 //  15 (/RST) RESET    GPIO14
 //  16 (/CS) CS        GPIO10
+// DC deliberately sits outside the 10-14 block. GPIO13 is the ESP32-S3's
+// default SPI MISO, and U8g2's hardware-SPI path attaches MISO to it — so
+// parking DC there meant the display transport fought its own DC line, and
+// blocked MISO for any future readable SPI device. GPIO18 is adjacent to
+// GPIO8 on the header, so the harness still runs in one region.
 constexpr int PIN_OLED_SCLK  = 12;
 constexpr int PIN_OLED_MOSI  = 11;
-constexpr int PIN_OLED_DC    = 13;
+constexpr int PIN_OLED_DC    = 18;
 constexpr int PIN_OLED_RESET = 14;
 constexpr int PIN_OLED_CS    = 10;
 

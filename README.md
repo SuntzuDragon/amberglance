@@ -33,12 +33,21 @@ Display, 4-wire SPI:
 | 2 (VBAT)  | 3.3V      | 3.3V   |
 | 4 (D0)    | SCLK      | GPIO12 |
 | 5 (D1)    | SDIN/MOSI | GPIO11 |
-| 14 (/DC)  | DC        | GPIO13 |
+| 14 (/DC)  | DC        | GPIO18 |
 | 15 (/RST) | RESET     | GPIO14 |
 | 16 (/CS)  | CS        | GPIO10 |
 
-Pins avoid the ESP32-S3 strapping pins (0/3/45/46), the native USB pins
-(19/20), and the octal-PSRAM pins (33–37). The pin map lives in
+`SDA`/`SCL` and `CS`/`MOSI`/`SCLK` are the ESP32-S3's own defaults, so both
+buses land on their IOMUX pins and `Wire.begin()`/`SPI.begin()` need no
+arguments. `DC` deliberately sits outside that block: `GPIO13` is the default
+SPI `MISO`, and U8g2's hardware-SPI path attaches MISO to it, so a DC line
+parked there fights its own transport — and blocks MISO for any future
+readable SPI device. `GPIO18` is adjacent to `GPIO8` on the header, so the
+harness still runs in one region.
+
+The rest avoid the ESP32-S3 strapping pins (0/3/45/46), the native USB pins
+(19/20), the SPI flash pins (26–32), the UART0 console (43/44), and the
+octal-PSRAM pins (33–37). The pin map lives in
 [`include/config.h`](include/config.h) and is the single source of truth.
 
 The SSD1322 ships in 8080 parallel mode; this panel's resistor jumpers were
@@ -189,19 +198,27 @@ Arduino HAL, and the ESP32's `digitalWrite` is not cheap. A 424ms frame also
 means the panel physically cannot refresh faster than ~2.4 Hz, which rules out
 grayscale or any animation later.
 
-Getting there needs one line, because U8g2's `_4W_HW_SPI` constructor leaves
-its clock/data pins unset and therefore takes the bare `SPI.begin()` path. On
-the ESP32-S3 that resolves to the FSPI defaults — including `MISO = GPIO13`,
-which is this project's DC line — and `spiAttachMISO` would reconfigure DC as
-an SPI input. So the bus is claimed first, with MISO explicitly disabled:
+It needs no special handling, because the wiring was chosen to suit it. U8g2's
+`_4W_HW_SPI` constructor leaves its clock/data pins unset and therefore takes
+the bare `SPI.begin()` path, which on the ESP32-S3 resolves to the FSPI
+defaults — `SCK 12`, `MOSI 11`, `MISO 13`. The first two match this wiring, and
+MISO is unused.
+
+DC originally sat on `GPIO13`, which is exactly that MISO pin, so `spiAttachMISO`
+reconfigured the DC line as an SPI input the moment hardware SPI initialised.
+That was workable by claiming the bus first with MISO disabled:
 
 ```cpp
 SPI.begin(PIN_OLED_SCLK, -1, PIN_OLED_MOSI, -1);   // before u8g2.begin()
 ```
 
-`SPIClass::begin()` opens with `if (_spi) return;`, so U8g2's later call becomes
-a no-op and GPIO13 stays a GPIO. Build with `-DAMBER_USE_HW_SPI` (on by
-default); drop the flag to fall back to bit-banging on different wiring.
+`SPIClass::begin()` opens with `if (_spi) return;`, which makes U8g2's later
+call a no-op. But moving DC to `GPIO18` removes the conflict outright and frees
+MISO for any future readable SPI device, so that is what the wiring does now.
+Keep the trick in mind if you ever need DC back on `13`.
+
+Build with `-DAMBER_USE_HW_SPI` (on by default); drop the flag to fall back to
+bit-banging on different wiring.
 
 ## Second-boundary alignment
 

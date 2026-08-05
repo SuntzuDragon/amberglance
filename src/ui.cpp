@@ -1,7 +1,6 @@
 #include "ui.h"
 
 #include <U8g2lib.h>
-#include <SPI.h>
 #include <string.h>
 #include <utility>
 
@@ -21,9 +20,10 @@ namespace {
 #define AMBER_OLED_SW U8G2_SSD1322_NHD_256X64_F_4W_SW_SPI
 #endif
 
-// Software SPI by default. U8g2's hardware-SPI constructor leaves its
-// clock/data pins unset and so takes the bare SPI.begin() path, which on the
-// ESP32-S3 claims MISO = GPIO13 — this project's DC line. See README.
+// Hardware SPI. U8g2's constructor leaves its clock/data pins unset and takes
+// the bare SPI.begin() path, which resolves to the ESP32-S3 FSPI defaults:
+// SCK 12 and MOSI 11 match this wiring, and MISO 13 is left unused now that DC
+// has moved off it. Software SPI stays available for different wiring.
 #ifdef AMBER_USE_HW_SPI
 AMBER_OLED_HW u8g2(U8G2_R0, PIN_OLED_CS, PIN_OLED_DC, PIN_OLED_RESET);
 #else
@@ -240,14 +240,6 @@ void drawTemperature(int ox, int oy, const ui::State &s) {
 }  // namespace
 
 void ui::begin() {
-#ifdef AMBER_USE_HW_SPI
-  // Claim the bus first, with MISO explicitly disabled. U8g2's hardware-SPI
-  // path would otherwise call the bare SPI.begin(), which on the ESP32-S3
-  // resolves to the FSPI defaults and attaches MISO to GPIO13 — the DC line.
-  // SPIClass::begin() opens with `if (_spi) return;`, so this makes U8g2's
-  // later call a no-op and DC stays a GPIO.
-  SPI.begin(PIN_OLED_SCLK, -1, PIN_OLED_MOSI, -1);
-#endif
   u8g2.begin();
   setBrightness(OLED_CONTRAST_DEFAULT);
 }
