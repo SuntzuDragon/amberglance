@@ -1,22 +1,28 @@
-// amberglance — slice 2: WiFi + NTP.
+// amberglance — indoor clock and dashboard.
 //
 // The clock keeps running regardless of the network: nothing in the loop
 // blocks on WiFi, and the display shows an honest placeholder rather than a
-// fabricated time until NTP has actually landed. Slice 3 adds the DS3231, at
-// which point the RTC covers the gap this placeholder currently fills.
+// fabricated time until NTP has actually landed. The DS3231 will later cover
+// the gap that placeholder currently fills.
+//
+// Ordering inside loop() is deliberate. The frame is paced to land on the
+// second boundary, so anything slow — sensor round-trips especially — runs
+// after the frame is sent, where there is a second of slack, never in the
+// lead-in window before it.
 
 #include <Arduino.h>
 #include <Wire.h>
 #include <math.h>
 #include <sys/time.h>
 
+#include "climate.h"
 #include "config.h"
 #include "dst.h"
 #include "net.h"
 #include "ui.h"
 
-// Sensors arrive in later slices; scanning now costs nothing and confirms the
-// bus is wired before anything depends on it.
+// Reports what is actually on the bus at boot. Cheap, and it has caught every
+// wiring question so far before any code depended on the answer.
 static void scanI2C() {
   Wire.begin(PIN_I2C_SDA, PIN_I2C_SCL);
 
@@ -38,17 +44,13 @@ static void scanI2C() {
   }
 }
 
-#ifdef AMBER_FAKE_SENSORS
-// Placeholder readings so the layout can be judged before the hardware exists.
-// They drift on purpose: a fixed value would hide the width changes that break
-// a right-aligned layout. Drop -DAMBER_FAKE_SENSORS once the sensors are real.
-static void fillFakeSensors(ui::State &s, float &lux, bool &haveLight) {
-  const float t = millis() / 1000.0f;
-  s.haveClimate = true;
-  s.tempF = 72.0f + 6.0f * sinf(t / 41.0f);         // 66 - 78 F
-  s.humidityPct = 42.0f + 12.0f * sinf(t / 67.0f);  // 30 - 54 %
+#ifdef AMBER_FAKE_LIGHT
+// Placeholder ambient light until the BH1750 is wired. It sweeps the whole
+// plausible range on purpose, so the dimming curve can be exercised before the
+// sensor exists. Drop -DAMBER_FAKE_LIGHT once it is real.
+static void fillFakeLight(float &lux, bool &haveLight) {
   haveLight = true;
-  lux = 700.0f + 698.0f * sinf(t / 29.0f);          // 2 - 1398 lx
+  lux = 700.0f + 698.0f * sinf(millis() / 1000.0f / 29.0f);  // 2 - 1398 lx
 }
 #endif
 
@@ -58,9 +60,9 @@ void setup() {
   while (!Serial && millis() < serialDeadline) delay(10);
 
   Serial.println();
-  Serial.println(F("amberglance - slice 2 (wifi + ntp)"));
-#ifdef AMBER_FAKE_SENSORS
-  Serial.println(F("sensors: FAKE placeholder data"));
+  Serial.println(F("amberglance - slice 4 (indoor temp + humidity)"));
+#ifdef AMBER_FAKE_LIGHT
+  Serial.println(F("light: FAKE placeholder data (BH1750 not wired)"));
 #endif
 
   ui::begin();
@@ -69,6 +71,7 @@ void setup() {
   ui::debugLayout();
 
   scanI2C();
+  climate::begin();
   dst::begin();
   net::begin();
 }
@@ -142,10 +145,14 @@ void loop() {
   s.dstNotice = dst::noticeActive() ? dst::noticeText() : nullptr;
   s.dstDirection = dst::direction();
 
+  s.haveClimate = climate::available();
+  s.tempF = climate::temperatureF();
+  s.humidityPct = climate::humidityPct();
+
   float lux = 0.0f;
   bool haveLight = false;
-#ifdef AMBER_FAKE_SENSORS
-  fillFakeSensors(s, lux, haveLight);
+#ifdef AMBER_FAKE_LIGHT
+  fillFakeLight(lux, haveLight);
 #endif
 
   // Ambient light stays off the glass by choice — it drives brightness and is
@@ -173,14 +180,24 @@ void loop() {
   g_renderUs = micros() - t0;
 
 #ifdef AMBER_LAYOUT_DEBUG
+  // Sample the landing before anything else runs, or this measures the work
+  // that follows rather than the frame.
+  struct timeval landed;
+  gettimeofday(&landed, nullptr);
+#endif
+
+  // Sensor round-trips go here, after the frame is on the glass: the SHT45
+  // conversion blocks ~10ms, which is fine against a second of slack but would
+  // push the next frame late if it ran in the lead-in window.
+  climate::poll();
+
+#ifdef AMBER_LAYOUT_DEBUG
   if (timeValid) {
     // How far the completed frame landed from the second boundary. Negative
     // means it finished early, which is the safe side.
     static uint8_t tick = 0;
     if ((tick++ % 10) == 0) {
-      struct timeval done;
-      gettimeofday(&done, nullptr);
-      long off = done.tv_usec;
+      long off = landed.tv_usec;
       if (off > 500000) off -= 1000000;
       Serial.printf("tick: render %luus, landed %+ldus from the second\n",
                     (unsigned long)g_renderUs, off);

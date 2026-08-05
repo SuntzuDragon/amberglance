@@ -7,7 +7,8 @@ tracks the ambient light in the room.
 Firmware is PlatformIO + Arduino. Built in slices, where every slice is a
 device that actually works rather than a half-finished step.
 
-**Status: slice 2 complete** — NTP-corrected time on screen.
+**Status: slices 1, 2 and 4 complete** — NTP-corrected time, indoor temperature
+and humidity on screen.
 
 ## Hardware
 
@@ -58,8 +59,10 @@ reworked to 4-wire SPI (BS0=0, BS1=0) before any code was written.
 1. **Display only** — validate the SPI rework and wiring. ✅
 2. **WiFi + NTP** — time on screen. ✅
 3. DS3231 RTC — survives reboot and WiFi loss.
-4. SHT45 — indoor temperature and humidity.
+4. **SHT45** — indoor temperature and humidity. ✅
 5. BH1750 — ambient-light auto-dimming.
+
+Slice 4 was taken before slice 3; the sensors do not depend on the RTC.
 
 Deliberately out of scope for now: outdoor ESP-NOW sensor node, WWVB radio time
 (ES100), CO2 (SCD41), battery backup, enclosure.
@@ -93,6 +96,11 @@ Deliberately out of scope for now: outdoor ESP-NOW sensor node, WWVB radio time
 - **Tabular numerals.** The `logisoso` faces are proportional, so a naively
   drawn clock twitches as digit widths change. Digits are laid out on a fixed
   pitch and the hour is space-padded, so nothing moves.
+- **Indoor climate is smoothed, not raw.** The SHT45 resolves finer than the
+  displayed tenth of a degree, so raw readings make the last digit flicker. A
+  light exponential average settles that. It is read every 5 seconds — room
+  temperature cannot change faster than that, and reading harder only heats the
+  die, which biases the reading warm.
 - Ambient light never appears on screen — it drives brightness and is logged to
   serial for tuning the curve.
 - Temperature in °F.
@@ -114,7 +122,7 @@ Set in `platformio.ini`.
 
 | Flag | Effect |
 |---|---|
-| `AMBER_FAKE_SENSORS` | Drifting placeholder temp/humidity/lux so the layout can be judged before the SHT45 and BH1750 are wired. Remove once they are real. |
+| `AMBER_FAKE_LIGHT` | Drifting placeholder lux so the dimming curve can be exercised before the BH1750 is wired. Remove once it is. |
 | `AMBER_LAYOUT_DEBUG` | Prints every block's worst-case ink rectangle at boot and runs a pairwise overlap test. Re-run it whenever a font or baseline changes. |
 | `AMBER_PANEL_ALT_MAP` | Selects the ZJY SSD1322 variant — see *Panel variants*. |
 | `AMBER_USE_HW_SPI` | **On by default.** Hardware SPI — 13ms per frame instead of 424ms. See *Software vs hardware SPI*. |
