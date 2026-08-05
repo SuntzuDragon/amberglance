@@ -63,7 +63,21 @@ Deliberately out of scope for now: outdoor ESP-NOW sensor node, WWVB radio time
   passive-matrix OLED will ghost otherwise.
 - **The clock must work with the network down.** The RTC drives the display
   immediately at boot; WiFi and NTP correct it in the background.
-- Mountain Time via the TZ string `MST7MDT,M3.2.0,M11.1.0`, so DST is automatic.
+- Mountain Time via the TZ string `MST7MDT,M3.2.0,M11.1.0`, so DST is automatic
+  and needs no network. The rule is evaluated on every conversion, not baked in
+  at sync time.
+- **Daylight-saving transitions are announced.** For 24 hours afterwards the
+  bottom-left line alternates between the sync status and e.g.
+  `DST +1h now MDT`, so an hour that vanished overnight is accounted for. The
+  observed state is persisted, so a transition is still reported if it happened
+  while the device was unplugged — and a *clock correction* that crosses a
+  boundary (a wrong RTC being fixed by NTP) re-baselines silently instead of
+  claiming a transition that never occurred.
+- **Tabular numerals.** The `logisoso` faces are proportional, so a naively
+  drawn clock twitches as digit widths change. Digits are laid out on a fixed
+  pitch and the hour is space-padded, so nothing moves.
+- Ambient light never appears on screen — it drives brightness and is logged to
+  serial for tuning the curve.
 - Temperature in °F.
 
 ## Building
@@ -76,6 +90,34 @@ python3 -m venv .venv && .venv/bin/pip install platformio
 Copy `include/secrets.h.example` to `include/secrets.h` and fill in your
 network before slice 2. That file is gitignored. The ESP32-S3 radio is 2.4GHz
 only.
+
+### Build flags
+
+Set in `platformio.ini`.
+
+| Flag | Effect |
+|---|---|
+| `AMBER_FAKE_SENSORS` | Drifting placeholder temp/humidity/lux so the layout can be judged before the SHT45 and BH1750 are wired. Remove once they are real. |
+| `AMBER_LAYOUT_DEBUG` | Prints every block's worst-case ink rectangle at boot and runs a pairwise overlap test. Re-run it whenever a font or baseline changes. |
+| `AMBER_PANEL_ALT_MAP` | Selects the ZJY SSD1322 variant — see *Panel variants*. |
+| `AMBER_USE_HW_SPI` | Hardware SPI instead of bit-banged — see *Software vs hardware SPI*. |
+
+The layout check exists because the right rail is right-aligned: an overflow
+silently overlaps rather than failing, and a vertical collision is invisible to
+a width-only check. It reports rectangles, so both axes are covered:
+
+```
+layout: worst-case ink rects (region 252x60)
+  time   x   2..121  y  4..42
+  secs   x 126..156  y 21..42
+  ampm   x 126..137  y 12..21
+  date   x 157..250  y  1..17
+  temp   x 166..250  y 23..44
+  humid  x 209..250  y 50..59
+  status x   2.. 91  y 50..59
+  lowest ink 59 + shift 4 = 63 (panel max row 63)
+  0 collisions
+```
 
 ### Flashing
 
