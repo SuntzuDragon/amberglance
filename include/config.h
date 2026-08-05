@@ -29,9 +29,16 @@ constexpr int PIN_OLED_RESET = 14;
 constexpr int PIN_OLED_CS    = 10;
 
 // ---- Display brightness policy ----
-// Always-on OLED: keep a floor so it stays readable in the dark and a ceiling
-// well below max, which both looks better and slows burn-in.
-constexpr uint8_t OLED_CONTRAST_MIN =  8;
+// Always-on OLED. The ceiling sits well below the hardware maximum of 255:
+// full drive current is both glarier than useful and the fastest route to
+// burn-in on a passive-matrix panel.
+//
+// The floor is 0 — the register's own minimum — because this panel stays
+// comfortably legible there in a dark room, so there is nothing to gain by
+// holding it higher. Note 0 is not off: the contrast register scales drive
+// current, and pixels are still lit at 0. Actually blanking the panel would
+// need the display-off command, not a contrast of 0.
+constexpr uint8_t OLED_CONTRAST_MIN =  0;
 constexpr uint8_t OLED_CONTRAST_MAX = 90;
 
 // Slice 1 runs at a fixed mid brightness; the BH1750 takes over in slice 5.

@@ -57,7 +57,13 @@ Deliberately out of scope for now: outdoor ESP-NOW sensor node, WWVB radio time
 
 ## Design notes
 
-- **Always on.** No presence sensor. Brightness comes purely from the BH1750.
+- **Always on.** No presence sensor. Brightness comes purely from the BH1750,
+  between a floor of `0` and a ceiling of `90` on the SSD1322's 0-255 contrast
+  register. The floor is the register minimum because this panel is still
+  comfortably legible there in a dark room; the ceiling stays far below maximum
+  because full drive current is glarier than useful and is the fastest route to
+  burn-in. Note contrast `0` is not off — pixels are still lit; blanking needs
+  the display-off command.
 - **Burn-in mitigation from day one.** The layout shifts a few pixels on a slow
   cycle and brightness is capped well below maximum. Static digits on a
   passive-matrix OLED will ghost otherwise.
