@@ -28,6 +28,10 @@ struct State {
   // the direction it went: +1 lost an hour, -1 gained one.
   const char *dstNotice;
   int dstDirection;
+
+  // Replaces the bottom-left status line when set. Used by the calibration
+  // build to show the level being judged.
+  const char *statusOverride;
 };
 
 void begin();

@@ -460,6 +460,7 @@ void ui::render(const State &s) {
 
   u8g2.setFont(FONT_SMALL);
   const char *bottomLeft = showNotice ? s.dstNotice : status;
+  if (s.statusOverride) bottomLeft = s.statusOverride;
   u8g2.drawStr(ox + X_MARGIN, oy + Y_BOTTOM, bottomLeft);
 
   if (showNotice) {

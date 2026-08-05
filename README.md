@@ -257,13 +257,44 @@ of large text stays clean well past the point where fine detail goes blotchy.
 Driving only the contrast register — the obvious thing, and what most code does
 — barely moves the bottom of the range.
 
-**This build sits at that floor permanently.** With all four at minimum the
-display is still comfortably legible in a bright room with the blinds open, so
-there is nothing to gain by ever going higher, and holding an always-on OLED at
-its floor is the best case for both burn-in and power. `AUTO_DIM_LEVEL_MIN` and
-`AUTO_DIM_LEVEL_MAX` in `include/config.h` clamp the curve's output; both are
-`0`. The sensor, the log-space mapping and the whole range are still live behind
-that clamp, so widening it is a one-line change.
+## Auto-dim calibration
+
+The lux-to-brightness curve is a least-squares fit in log space to **17 real
+judgements**, not guessed anchors. A temporary pushbutton was wired to `GPIO17`
+(short press steps brightness, long press records the current `(lux, level)`
+pair to NVS); the device was then carried around the house on a power bank,
+setting what actually looked right in each room.
+
+```
+LUX_DARK = 2.7      level 0   at or below
+LUX_BRIGHT = 250    level 255 at or above
+```
+
+| Room | Lux | Level |
+|---|---|---|
+| Pitch dark | ≤ 2.7 | 0 |
+| Very dim | 5 | 34 |
+| Dim | 10 | 73 |
+| Office, lights off | 31 | 137 |
+| Normal indoor | 100 | 203 |
+| Bright | ≥ 250 | 255 |
+
+Two of the 17 points were dropped as recording errors: `413 lx → 192`, which
+contradicts both `154 lx → 224` and `674 lx → 255`, and `10.6 lx → 16`, which
+contradicts `13.7 lx → 128` three lux away — almost certainly a stale reading
+recorded before the 5-second lux smoothing caught up.
+
+The fit's RMSE is **18 levels**, against a measured self-consistency of ~24
+levels across repeat judgements at similar light (`25-36 lx` produced
+`96, 96, 128, 128, 160`). The curve tracks the judgement more closely than the
+judgement repeats itself, so a more elaborate model would only fit noise.
+
+The harness lives in `calib.cpp` behind `-DAMBER_CALIBRATE`, off by default and
+compiling to zero bytes. It is kept rather than deleted because **an enclosure
+invalidates this calibration** — any aperture or diffuser over the BH1750
+changes how much light reaches it, shifting the whole curve. Re-enable the flag,
+rewire a button to `GPIO17`, and walk the house again. Holding the button
+through boot clears the stored points.
 
 Deliberately unused: phase length (`0xB1`), second pre-charge period (`0xB6`)
 and VCOMH (`0xBE`). All three affect apparent brightness, but they are drive and

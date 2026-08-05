@@ -33,6 +33,12 @@ constexpr int PIN_OLED_DC    = 18;
 constexpr int PIN_OLED_RESET = 14;
 constexpr int PIN_OLED_CS    = 10;
 
+// ---- Calibration button (temporary, -DAMBER_CALIBRATE only) ----
+// Momentary switch to ground; the internal pull-up does the rest, so pressed
+// reads LOW. GPIO13 is deliberately avoided even though it is free: it was
+// vacated to keep SPI MISO available.
+constexpr int PIN_BUTTON = 17;
+
 // ---- Display brightness policy ----
 // The SSD1322 has TWO independent brightness controls, and using only one
 // wastes most of the panel's range:
@@ -81,25 +87,28 @@ constexpr uint8_t OLED_PRECHARGE_MAX = 0x1F;
 // Used before the light sensor has a reading, and whenever it is unavailable.
 constexpr uint8_t OLED_BRIGHTNESS_DEFAULT = 128;
 
-// The auto-dim curve's output is clamped to this band. Both ends are pinned at
-// 0 because the panel's true floor — all three brightness controls at minimum —
-// turned out to be comfortably legible even in a bright room with the blinds
-// open. There is nothing to gain by ever going above it, and an always-on OLED
-// held at its floor is the best case for both burn-in and power.
-//
-// Widen this if a sunlit room ever washes the display out; the sensor, the
-// curve and the whole mapping are still live behind the clamp.
+// The auto-dim curve's output is clamped to this band. It spans the full range
+// now that the curve is fitted to real judgements; the clamp exists so the
+// range can be narrowed without touching the curve.
 constexpr uint8_t AUTO_DIM_LEVEL_MIN = 0;
-constexpr uint8_t AUTO_DIM_LEVEL_MAX = 0;
+constexpr uint8_t AUTO_DIM_LEVEL_MAX = 255;
 
 // ---- Auto-dimming curve ----
-// Anchor points for the lux-to-contrast mapping, which is interpolated in log
-// space. At or below LUX_DARK the display sits at its floor; at or above
-// LUX_BRIGHT, its ceiling. Rough reference: an unlit room at night is well
-// under 1 lx, comfortable indoor lighting is 100-300 lx, and a sunlit room
-// runs into the thousands.
-constexpr float LUX_DARK = 1.0f;
-constexpr float LUX_BRIGHT = 400.0f;
+// Anchor points for the lux-to-level mapping, interpolated in log space. At or
+// below LUX_DARK the display sits at its floor; at or above LUX_BRIGHT, its
+// ceiling.
+//
+// These are not guesses — they are a least-squares fit to 17 judgements made by
+// carrying the device around the house with a temporary button, choosing what
+// looked right in each room, and recording (lux, level) pairs. See the
+// calibration harness in calib.cpp.
+//
+// The fit's RMSE is 18 levels, against a measured self-consistency of ~24
+// levels across repeat judgements at similar light. In other words the curve
+// already tracks the judgement more closely than the judgement repeats itself,
+// so a more elaborate model would only be fitting noise.
+constexpr float LUX_DARK = 2.7f;
+constexpr float LUX_BRIGHT = 250.0f;
 
 // ---- Burn-in mitigation ----
 // Always-on OLED with static digits will ghost. The whole layout is drawn into

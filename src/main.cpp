@@ -14,6 +14,7 @@
 #include <Wire.h>
 #include <sys/time.h>
 
+#include "calib.h"
 #include "climate.h"
 #include "config.h"
 #include "dst.h"
@@ -60,6 +61,9 @@ void setup() {
   scanI2C();
   climate::begin();
   light::begin();
+#ifdef AMBER_CALIBRATE
+  calib::begin();
+#endif
   dst::begin();
   net::begin();
 }
@@ -109,10 +113,25 @@ void loop() {
     const int64_t nowUs = (int64_t)tv.tv_sec * 1000000 + tv.tv_usec;
     const int64_t targetUs =
         (int64_t)g_nextTick * 1000000 - (int64_t)g_renderUs;
-    const int64_t waitUs = targetUs - nowUs;
-    if (waitUs > 0) {
-      delay((uint32_t)(waitUs / 1000));
-      delayMicroseconds((uint32_t)(waitUs % 1000));
+    (void)nowUs;
+    // Sleep in slices rather than one long delay, so anything that needs
+    // servicing between frames (the calibration button) still feels immediate.
+    for (;;) {
+      struct timeval now;
+      gettimeofday(&now, nullptr);
+      const int64_t remainingUs =
+          targetUs - ((int64_t)now.tv_sec * 1000000 + now.tv_usec);
+      if (remainingUs <= 0) break;
+#ifdef AMBER_CALIBRATE
+      calib::poll();
+#endif
+      if (remainingUs > 10000) {
+        delay(10);
+      } else {
+        delay((uint32_t)(remainingUs / 1000));
+        delayMicroseconds((uint32_t)(remainingUs % 1000));
+        break;
+      }
     }
 
     showEpoch = g_nextTick;
@@ -143,7 +162,12 @@ void loop() {
   // Only push a contrast change when it actually moves, so the panel is not
   // handed the same value every second.
   static uint16_t lastLevel = 0xFFFF;
+#ifdef AMBER_CALIBRATE
+  const uint8_t level = calib::level();
+  s.statusOverride = calib::statusText();
+#else
   const uint8_t level = light::recommendedLevel();
+#endif
   if (level != lastLevel) {
     lastLevel = level;
     ui::setBrightness(level);
@@ -152,7 +176,7 @@ void loop() {
     // logging every one would bury everything else. Report periodically; the
     // live value is on the glass.
     static uint32_t lastLogMs = 0;
-    if (s.haveLight && millis() - lastLogMs >= 15000) {
+    if (s.haveLight && (lastLogMs == 0 || millis() - lastLogMs >= 15000)) {
       lastLogMs = millis();
       Serial.printf("light: %.0f lx -> level %u\n", s.lux, level);
     }
