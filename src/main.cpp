@@ -74,42 +74,69 @@ void setup() {
 }
 
 // The frame takes real time to draw and clock out, so the second that belongs
-// on the glass is the one that will be current when the transfer finishes —
+// on the glass is the one that will be current when the transfer *finishes*,
 // not the one current as drawing begins. Measured from the previous frame, so
-// it self-corrects as drawing cost changes with content.
+// the lead self-corrects as drawing cost changes with content.
 static uint32_t g_renderUs = 15000;
 
-static void loadDisplayTime(ui::State &s) {
-  struct timeval tv;
-  gettimeofday(&tv, nullptr);
-  time_t shown = tv.tv_sec;
-  if ((uint32_t)tv.tv_usec + g_renderUs >= 1000000) shown++;
-  localtime_r(&shown, &s.local);
-}
-
-// Start drawing g_renderUs before the next second so the pixels change on the
-// boundary, rather than up to a poll interval after it. Without this the loop
-// period is (render + delay), so the phase at which the rollover is noticed
-// drifts — and drifts by a different amount depending on what was drawn.
-static void paceToSecondBoundary() {
-  struct timeval tv;
-  gettimeofday(&tv, nullptr);
-  int32_t us = 1000000 - (int32_t)tv.tv_usec - (int32_t)g_renderUs;
-  if (us < 2000) us += 1000000;
-  delay(us / 1000);
-  delayMicroseconds(us % 1000);
-}
+// The next wall-clock second to display, scheduled on an absolute timeline.
+//
+// An earlier version inferred ticks by comparing the current second against
+// the last one drawn, and slept toward `boundary - renderUs`. Those are two
+// independent thresholds straddling the same instant, and waking a hair early
+// put them on opposite sides: the current second still read as the previous
+// one, so nothing was drawn, and the sleep then rounded forward to the
+// *following* boundary. The result was an occasional two-second jump. Counting
+// ticks explicitly cannot drift that way — each second is claimed before it
+// arrives.
+static time_t g_nextTick = 0;
 
 void loop() {
   net::poll();
 
+  const bool timeValid = net::timeValid();
+  time_t showEpoch = 0;
+
+  if (timeValid) {
+    struct timeval tv;
+    gettimeofday(&tv, nullptr);
+
+    // Establish the schedule on the first valid time, and re-establish it if
+    // we ever fall behind — a long stall, or NTP stepping the clock.
+    if (g_nextTick == 0 || tv.tv_sec >= g_nextTick) {
+#ifdef AMBER_LAYOUT_DEBUG
+      if (g_nextTick != 0) {
+        Serial.printf("tick: behind by %llds, resyncing\n",
+                      (long long)(tv.tv_sec - g_nextTick + 1));
+      }
+#endif
+      g_nextTick = tv.tv_sec + 1;
+    }
+
+    // Sleep until one render-time before the target second, so the pixels
+    // change as it arrives.
+    const int64_t nowUs = (int64_t)tv.tv_sec * 1000000 + tv.tv_usec;
+    const int64_t targetUs =
+        (int64_t)g_nextTick * 1000000 - (int64_t)g_renderUs;
+    const int64_t waitUs = targetUs - nowUs;
+    if (waitUs > 0) {
+      delay((uint32_t)(waitUs / 1000));
+      delayMicroseconds((uint32_t)(waitUs % 1000));
+    }
+
+    showEpoch = g_nextTick;
+    g_nextTick++;
+  } else {
+    // No time to pace against yet. Re-establish the schedule when it arrives.
+    g_nextTick = 0;
+    delay(500);
+  }
+
   ui::State s{};
   s.net = net::status();
-  s.timeValid = net::timeValid();
+  s.timeValid = timeValid;
   s.secondsSinceSync = net::secondsSinceSync();
-  if (s.timeValid) {
-    loadDisplayTime(s);
-  }
+  if (timeValid) localtime_r(&showEpoch, &s.local);
 
   dst::update(s.local, s.timeValid);
   s.dstNotice = dst::noticeActive() ? dst::noticeText() : nullptr;
@@ -129,41 +156,24 @@ void loop() {
     Serial.printf("light: %.0f lx\n", lux);
   }
 
-  // Redraw only when something visible changes. At one update per second a
-  // full software-SPI refresh is ~6% duty; repainting every pass would be
-  // pointless work and would fight the burn-in shift's timing.
-  static int lastSec = -1;
   static bool lastValid = false;
-  static net::Status lastNet = net::Status::Offline;
-  static uint32_t lastShiftStep = UINT32_MAX;
-  static uint32_t lastNoticePhase = UINT32_MAX;
-
-  if (s.timeValid && !lastValid) {
+  if (timeValid && !lastValid) {
     // One-shot, so the TZ/DST result is visible in the boot log instead of
     // only on the glass. %Z resolves to MDT or MST via the TZ string.
     char stamp[48];
     strftime(stamp, sizeof(stamp), "%a %Y-%m-%d %H:%M:%S %Z", &s.local);
     Serial.printf("time: %s\n", stamp);
   }
+  lastValid = timeValid;
 
-  const uint32_t shiftStep = millis() / SHIFT_INTERVAL_MS;
-  const uint32_t noticePhase = s.dstNotice ? (millis() / 4000) : 0;
-  const bool changed = s.local.tm_sec != lastSec || s.timeValid != lastValid ||
-                       s.net != lastNet || shiftStep != lastShiftStep ||
-                       noticePhase != lastNoticePhase;
-
-  if (changed) {
-    lastSec = s.local.tm_sec;
-    lastValid = s.timeValid;
-    lastNet = s.net;
-    lastShiftStep = shiftStep;
-    lastNoticePhase = noticePhase;
-
-    const uint32_t t0 = micros();
-    ui::render(s);
-    g_renderUs = micros() - t0;
+  // Exactly one frame per tick, so there is nothing to suppress: the seconds
+  // change every time, and at ~13ms a frame this is about 1% duty.
+  const uint32_t t0 = micros();
+  ui::render(s);
+  g_renderUs = micros() - t0;
 
 #ifdef AMBER_LAYOUT_DEBUG
+  if (timeValid) {
     // How far the completed frame landed from the second boundary. Negative
     // means it finished early, which is the safe side.
     static uint8_t tick = 0;
@@ -175,9 +185,6 @@ void loop() {
       Serial.printf("tick: render %luus, landed %+ldus from the second\n",
                     (unsigned long)g_renderUs, off);
     }
-#endif
   }
-
-  if (s.timeValid) paceToSecondBoundary();
-  else delay(50);
+#endif
 }

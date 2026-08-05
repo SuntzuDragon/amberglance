@@ -204,16 +204,32 @@ period is `render + delay`. The phase at which a rollover is noticed then
 drifts — and drifts by a different amount depending on how much ink the last
 frame contained, which is visible as the seconds landing unevenly.
 
-Instead the loop sleeps until exactly one render-time before the next second,
-using the *previous* frame's measured duration so it self-corrects as content
-changes, and draws the second that will be current when the transfer
-*finishes*. Frames land within a millisecond of the boundary:
+Instead each second is **claimed before it arrives**. The loop holds the next
+epoch second it intends to display, sleeps until one render-time before that
+instant (using the previous frame's measured duration, so the lead self-corrects
+as content changes), draws that second, and increments. Frames land within a
+millisecond of the boundary:
 
 ```
-tick: render 13981us, landed +118us from the second
+tick: render 13932us, landed +410us from the second
+tick: render 14017us, landed -324us from the second
 ```
 
-`AMBER_LAYOUT_DEBUG` reports this every tenth frame.
+Scheduling on an absolute timeline matters, and an earlier version got it
+wrong. It inferred a tick by comparing the current second against the last one
+drawn, *and* slept toward `boundary - renderUs`. Those are two independent
+thresholds either side of the same instant, so waking a hair early put them on
+opposite sides: the current second still read as the previous one, nothing was
+drawn, and the sleep then rounded forward to the following boundary. The symptom
+was the clock occasionally hanging and jumping two seconds. Counting ticks
+explicitly cannot drift that way — and if the schedule is ever genuinely missed,
+it says so:
+
+```
+tick: behind by 1s, resyncing
+```
+
+`AMBER_LAYOUT_DEBUG` reports the landing every tenth frame, and every resync.
 
 ## License
 
