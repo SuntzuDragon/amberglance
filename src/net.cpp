@@ -34,6 +34,22 @@ void startAttempt() {
 // a live staleness measure rather than time-since-boot.
 void onNtpSync(struct timeval *) {
   g_lastSyncMs = millis();
+
+  if (!g_everSynced) {
+    // Report the servers actually in use. DHCP option 42 can replace slot 0 at
+    // runtime (CONFIG_LWIP_DHCP_GET_NTP_SRV is compiled in), so the configured
+    // list is not necessarily the list that answered.
+    for (uint8_t i = 0; i < 3; i++) {
+      const char *name = sntp_getservername(i);
+      const ip_addr_t *ip = sntp_getserver(i);
+      const bool haveIp = ip && !ip_addr_isany(ip);
+      if (!name && !haveIp) continue;
+      Serial.printf("ntp: server[%u] %s%s%s\n", i, name ? name : "",
+                    (name && haveIp) ? " -> " : "",
+                    haveIp ? ipaddr_ntoa(ip) : "");
+    }
+  }
+
   g_everSynced = true;
   Serial.println(F("ntp: time synced"));
 }

@@ -1,6 +1,7 @@
 #include "ui.h"
 
 #include <U8g2lib.h>
+#include <string.h>
 
 #include "config.h"
 
@@ -56,25 +57,36 @@ void formatAge(uint32_t secs, char *out, size_t n) {
   else snprintf(out, n, "%uh", (unsigned)(secs / 3600));
 }
 
+// The condition the status line is reporting, without the age. Split out from
+// the rendered text so serial logging can fire on real state changes rather
+// than once a second as the age ticks over.
+const char *statusKind(const ui::State &s) {
+  if (!s.timeValid) {
+    switch (s.net) {
+      case net::Status::Connecting: return "connecting";
+      case net::Status::Online:     return "syncing";
+      default:                      return "no network";
+    }
+  }
+  // Once the time is known, the question stops being "do we have a time" and
+  // becomes "how stale is it" — which matters most precisely when offline, so
+  // the age stays on screen either way.
+  return (s.net == net::Status::Online) ? "sync" : "offline";
+}
+
 // The status line answers "should I trust these digits". While the time is
 // unknown it says why; once it is known it reports how stale the sync is.
 void statusText(const ui::State &s, char *out, size_t n) {
-  if (!s.timeValid) {
-    switch (s.net) {
-      case net::Status::Connecting: snprintf(out, n, "connecting"); return;
-      case net::Status::Online:     snprintf(out, n, "syncing"); return;
-      default:                      snprintf(out, n, "no network"); return;
-    }
-  }
+  const char *kind = statusKind(s);
 
-  if (s.net != net::Status::Online) {
-    snprintf(out, n, "offline");
+  if (!s.timeValid) {
+    snprintf(out, n, "%s", kind);
     return;
   }
 
   char age[8];
   formatAge(s.secondsSinceSync, age, sizeof(age));
-  snprintf(out, n, "sync %s", age);
+  snprintf(out, n, "%s %s", kind, age);
 }
 
 }  // namespace
@@ -146,10 +158,21 @@ void ui::render(const State &s) {
   }
 
   // --- Status, bottom right ---
-  char status[16];
+  char status[20];
   statusText(s, status, sizeof(status));
   u8g2.setFont(u8g2_font_6x10_tf);
   drawRight(ox, oy + Y_STATUS, status);
+
+  // Mirror the panel's own account of itself to serial, so it is visible in a
+  // log without anyone having to look at the glass. Keyed on the condition
+  // rather than the full string, or the ticking age would emit a line a second
+  // forever on an always-on device.
+  static const char *lastKind = "";
+  const char *kind = statusKind(s);
+  if (strcmp(kind, lastKind) != 0) {
+    lastKind = kind;
+    Serial.printf("ui: status \"%s\"\n", status);
+  }
 
   u8g2.sendBuffer();
 }
